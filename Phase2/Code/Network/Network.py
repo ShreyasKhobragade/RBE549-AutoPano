@@ -21,22 +21,38 @@ import pytorch_lightning as pl
 # Don't generate pyc codes
 sys.dont_write_bytecode = True
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
- 
+# def LossFn(delta, img_a, patch_b, corners):
+#     ###############################################
+#     # Fill your loss function of choice here!
+#     ###############################################
 
+#     ###############################################
+#     # You can use kornia to get the transform and warp in this project
+#     # Bonus if you implement it yourself
+#     ###############################################
+#     loss_fn=nn.CrossEntropyLoss()
+#     loss = ...
+#     return loss
 
 def LossFn(PredicatedCoordinatesBatch, CoordinatesBatch):
-    ###############################################
-    # Fill your loss function of choice here!
-    ###############################################
+    """
+    Computes the cross-entropy loss for homography estimation with quantization bins.
 
-    ###############################################
-    # You can use kornia to get the transform and warp in this project
-    # Bonus if you implement it yourself
-    ###############################################
-    criterion = nn.MSELoss()
-    loss = criterion(PredicatedCoordinatesBatch, CoordinatesBatch)
+    Parameters:
+    delta  : Tensor of shape (batch_size, 168), the predicted softmax outputs for 8 corners × 21 bins.
+    img_a  : Input image A (not used in loss calculation, but part of function signature).
+    patch_b: Input patch B (not used in loss calculation).
+    corners: Tensor of shape (batch_size, 8), ground truth bin indices (each value ∈ [0, 20]).
+
+    Returns:
+    loss   : Scalar loss value.
+    """
+
+    # Reshape delta from (batch_size, 168) → (batch_size, 8, 21)
+    loss_fn=torch.nn.MSELoss()
+    loss=loss_fn(PredicatedCoordinatesBatch, CoordinatesBatch)
+
     return loss
 
 
@@ -46,8 +62,8 @@ class HomographyModel(pl.LightningModule):
         self.hparams = hparams
         self.model = SupNet()
 
-    def forward(self, a, b):
-        return self.model(a, b)
+    def forward(self, a):
+        return self.model(a)
 
     def training_step(self, batch, batch_idx):
         img_a, patch_a, patch_b, corners, gt = batch
@@ -56,10 +72,12 @@ class HomographyModel(pl.LightningModule):
         logs = {"loss": loss}
         return {"loss": loss, "log": logs}
 
-    def validation_step(self, batch, batch_idx):
-        img_a, patch_a, patch_b, corners, gt = batch
-        delta = self.model(patch_a, patch_b)
-        loss = LossFn(delta, img_a, patch_b, corners)
+    def validation_step(self, batch, labels):
+        prediction = self.model(batch)
+        loss = LossFn(prediction, labels)
+        # img_a, patch_a, patch_b, corners, gt = batch
+        # delta = self.model(patch_a, patch_b)
+        # loss = LossFn(delta, img_a, patch_b, corners)
         return {"val_loss": loss}
 
     def validation_epoch_end(self, outputs):
@@ -68,19 +86,84 @@ class HomographyModel(pl.LightningModule):
         return {"avg_val_loss": avg_loss, "log": logs}
 
 
+# class Net(nn.Module):
+#     def __init__(self, InputSize, OutputSize):
+#         """
+#         Inputs:
+#         InputSize - Size of the Input
+#         OutputSize - Size of the Output
+#         """
+#         super().__init__()
+#         #############################
+#         # Fill your network initialization of choice here!
+#         #############################
+#         ...
+#         #############################
+#         # You will need to change the input size and output
+#         # size for your Spatial transformer network layer!
+#         #############################
+#         # Spatial transformer localization-network
+#         self.localization = nn.Sequential(
+#             nn.Conv2d(1, 8, kernel_size=7),
+#             nn.MaxPool2d(2, stride=2),
+#             nn.ReLU(True),
+#             nn.Conv2d(8, 10, kernel_size=5),
+#             nn.MaxPool2d(2, stride=2),
+#             nn.ReLU(True),
+#         )
+
+#         # Regressor for the 3 * 2 affine matrix
+#         self.fc_loc = nn.Sequential(
+#             nn.Linear(10 * 3 * 3, 32), nn.ReLU(True), nn.Linear(32, 3 * 2)
+#         )
+
+#         # Initialize the weights/bias with identity transformation
+#         self.fc_loc[2].weight.data.zero_()
+#         self.fc_loc[2].bias.data.copy_(
+#             torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float)
+#         )
+
+#     #############################
+#     # You will need to change the input size and output
+#     # size for your Spatial transformer network layer!
+#     #############################
+#     def stn(self, x):
+#         "Spatial transformer network forward function"
+#         xs = self.localization(x)
+#         xs = xs.view(-1, 10 * 3 * 3)
+#         theta = self.fc_loc(xs)
+#         theta = theta.view(-1, 2, 3)
+
+#         grid = F.affine_grid(theta, x.size())
+#         x = F.grid_sample(x, grid)
+
+#         return x
+
+#     def forward(self, xa, xb):
+#         """
+#         Input:
+#         xa is a MiniBatch of the image a
+#         xb is a MiniBatch of the image b
+#         Outputs:
+#         out - output of the network
+#         """
+#         #############################
+#         # Fill your network structure of choice here!
+#         #############################
+#         return out
+
 class SupNet(nn.Module):
-    def __init__(self, InputSize, OutputSize):
+    def __init__(self, InputSize=2, OutputSize=8):
         """
         Inputs:
         InputSize - Size of the Input
-        OutputSize - Size of the Output
+        OutputSize - Size of the Output (should be 168 for 21 bins * 8 dimensions)
         """
+
         super().__init__()
-        #############################
-        # Fill your network initialization of choice here!
-        #############################
+        
         # VGG-style convolutional blocks for main network
-        self.conv1_1 = nn.Conv2d(2, 64, kernel_size=3, padding=1)
+        self.conv1_1 = nn.Conv2d(InputSize, 64, kernel_size=3, padding=1)
         self.bn1_1 = nn.BatchNorm2d(64)
         self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.bn1_2 = nn.BatchNorm2d(64)
@@ -110,10 +193,7 @@ class SupNet(nn.Module):
         # Dropout layers
         self.dropout1 = nn.Dropout(0.5)
         self.dropout2 = nn.Dropout(0.5)
-        #############################
-        # You will need to change the input size and output
-        # size for your Spatial transformer network layer!
-        #############################
+        
         # Spatial transformer localization-network
         self.localization = nn.Sequential(
             nn.Conv2d(1, 8, kernel_size=7),
@@ -123,51 +203,40 @@ class SupNet(nn.Module):
             nn.MaxPool2d(2, stride=2),
             nn.ReLU(True),
         )
-
+        
         # Regressor for the 3 * 2 affine matrix
         self.fc_loc = nn.Sequential(
-            nn.Linear(10 * 3 * 3, 32), nn.ReLU(True), nn.Linear(32, 3 * 2)
+            nn.Linear(10 * 3 * 3, 32),
+            nn.ReLU(True),
+            nn.Linear(32, 3 * 2)
         )
-
+        
         # Initialize the weights/bias with identity transformation
         self.fc_loc[2].weight.data.zero_()
         self.fc_loc[2].bias.data.copy_(
             torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float)
         )
 
-    #############################
-    # You will need to change the input size and output
-    # size for your Spatial transformer network layer!
-    #############################
-    def stn(self, x):
-        "Spatial transformer network forward function"
-        xs = self.localization(x)
-        xs = xs.view(-1, 10 * 3 * 3)
-        theta = self.fc_loc(xs)
-        theta = theta.view(-1, 2, 3)
+    # def stn(self, x):
+    #     """Spatial transformer network forward function"""
+    #     xs = self.localization(x)
+    #     xs = xs.view(-1, 10 * 3 * 3)
+    #     theta = self.fc_loc(xs)
+    #     theta = theta.view(-1, 2, 3)
+    #     grid = F.affine_grid(theta, x.size())
+    #     x = F.grid_sample(x, grid)
+    #     return x
 
-        grid = F.affine_grid(theta, x.size())
-        x = F.grid_sample(x, grid)
-
-        return x
-
-    def forward(self, xa, xb):
+    def forward(self, x):
         """
         Input:
         xa is a MiniBatch of the image a
         xb is a MiniBatch of the image b
         Outputs:
-        out - output of the network
+        out - output of the network (168 dimensional for 21 bins * 8 corners)
         """
-        #############################
-        # Fill your network structure of choice here!
-        #############################
-        # Apply STN to both images
-        xa = self.stn(xa)
-        xb = self.stn(xb)
-        
-        # Stack the transformed images along channel dimension
-        x = torch.cat([xa, xb], dim=1)
+
+        #x = torch.cat([xa, xb], dim=1)
         
         # First conv block
         x = F.relu(self.bn1_1(self.conv1_1(x)))
@@ -194,15 +263,15 @@ class SupNet(nn.Module):
         x = self.dropout1(x)
         
         # Fully connected layers with dropout
-        x = F.relu(self.fc1(x))
-        x = self.dropout2(x)
-        x = self.fc2(x)
+        #x = F.relu(self.fc1(x))
+        x = self.fc1(x)
+        out = self.fc2(x)
         
         # Reshape to (batch_size, 8, 21) and apply softmax
-        x = x.view(-1, 8, 21)
-        x = F.softmax(x, dim=2)
+        # x = x.view(-1, 8, 21)
+        # x = F.softmax(x, dim=2)
         
-        # Reshape back to (batch_size, 168)
-        out = x.view(-1, 168)
-
+        # # Reshape back to (batch_size, 168)
+        # out = x.view(-1, 168)
+        
         return out
