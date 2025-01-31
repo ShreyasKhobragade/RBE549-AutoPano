@@ -23,6 +23,7 @@ sys.dont_write_bytecode = True
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+ 
 
 
 def LossFn(PredicatedCoordinatesBatch, CoordinatesBatch):
