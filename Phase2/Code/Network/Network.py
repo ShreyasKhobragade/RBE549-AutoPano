@@ -36,19 +36,6 @@ sys.dont_write_bytecode = True
 #     return loss
 
 def LossFn(PredicatedCoordinatesBatch, CoordinatesBatch):
-    """
-    Computes the cross-entropy loss for homography estimation with quantization bins.
-
-    Parameters:
-    delta  : Tensor of shape (batch_size, 168), the predicted softmax outputs for 8 corners × 21 bins.
-    img_a  : Input image A (not used in loss calculation, but part of function signature).
-    patch_b: Input patch B (not used in loss calculation).
-    corners: Tensor of shape (batch_size, 8), ground truth bin indices (each value ∈ [0, 20]).
-
-    Returns:
-    loss   : Scalar loss value.
-    """
-
     # Reshape delta from (batch_size, 168) → (batch_size, 8, 21)
     loss_fn=torch.nn.MSELoss()
     loss=loss_fn(PredicatedCoordinatesBatch, CoordinatesBatch)

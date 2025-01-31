@@ -48,10 +48,9 @@ from termcolor import colored, cprint
 import math as m
 from tqdm import tqdm
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize):
+def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize,T):
     """
     Inputs:
     BasePath - Path to COCO folder without "/" at the end
@@ -65,28 +64,42 @@ def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatc
     I1Batch - Batch of images
     CoordinatesBatch - Batch of coordinates
     """
+
     I1Batch = []
     CoordinatesBatch = []
+    if T == 0:
+        name = "TrainSet"
+    else:
+        name = "ValSet"
 
     ImageNum = 0
     while ImageNum < MiniBatchSize:
         # Generate random image
         RandIdx = random.randint(0, len(DirNamesTrain) - 1)
 
-        RandImageName = BasePath + os.sep + DirNamesTrain[RandIdx] + ".jpg"
+
+
+        RandImageName_o = BasePath + os.sep + name + "/original_patches/" + DirNamesTrain[RandIdx] + "_original.jpg"
+        RandImageName_w = BasePath + os.sep + name + "/warped_patches/" + DirNamesTrain[RandIdx] + "_warped.jpg"
         ImageNum += 1
 
         ##########################################################
         # Add any standardization or data augmentation here!
         ##########################################################
-        I1 = np.float32(cv2.imread(RandImageName))
+        I1 = np.float32(cv2.imread(RandImageName_o))
+        I2 = np.float32(cv2.imread(RandImageName_w))
+        IS = np.concatenate((I1, I2), axis=2)
         Coordinates = TrainCoordinates[RandIdx]
 
         # Append All Images and Mask
-        I1Batch.append(torch.from_numpy(I1))
+        I1Batch.append(torch.from_numpy(IS))
         CoordinatesBatch.append(torch.tensor(Coordinates))
 
-    return torch.stack(I1Batch), torch.stack(CoordinatesBatch)
+
+
+
+
+    return torch.stack(I1Batch).to(device), torch.stack(CoordinatesBatch).to(device)
 
 
 def PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile):
@@ -136,13 +149,13 @@ def TrainOperation(
     Saves Trained network in CheckPointPath and Logs to LogsPath
     """
     # Predict output with forward pass
-    model = HomographyModel()
+    model = HomographyModel().to(device)
 
     ###############################################
     # Fill your optimizer of choice here!
     ###############################################
-    Optimizer = ...
-
+    Optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(Optimizer, step_size=30000, gamma=0.9)
     # Tensorboard
     # Create a summary to monitor loss tensor
     Writer = SummaryWriter(LogsPath)
@@ -156,6 +169,9 @@ def TrainOperation(
     else:
         StartEpoch = 0
         print("New model initialized....")
+
+
+        #initialize wandb
 
     for Epochs in tqdm(range(StartEpoch, NumEpochs)):
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
@@ -171,7 +187,7 @@ def TrainOperation(
             Optimizer.zero_grad()
             LossThisBatch.backward()
             Optimizer.step()
-
+            scheduler.step()
             # Save checkpoint every some SaveCheckPoint's iterations
             if PerEpochCounter % SaveCheckPoint == 0:
                 # Save the Model learnt in this epoch
@@ -194,7 +210,7 @@ def TrainOperation(
                 )
                 print("\n" + SaveName + " Model Saved...")
 
-            result = model.validation_step(Batch)
+            result = model.validation_step(I1Batch, CoordinatesBatch)
             # Tensorboard
             Writer.add_scalar(
                 "LossEveryIter",
@@ -229,7 +245,7 @@ def main():
     Parser = argparse.ArgumentParser()
     Parser.add_argument(
         "--BasePath",
-        default="/home/lening/workspace/rbe549/YourDirectoryID_p1/Phase2/Data",
+        default="../Data",
         help="Base path of images, Default:/home/lening/workspace/rbe549/YourDirectoryID_p1/Phase2/Data",
     )
     Parser.add_argument(
@@ -320,4 +336,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
