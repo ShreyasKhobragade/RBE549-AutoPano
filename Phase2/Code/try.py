@@ -20,7 +20,7 @@ def ReadLabels(LabelsPathTrain):
     df = pd.read_csv(LabelsPathTrain)
     
     # Extract the last 8 columns (h1 to h8) as a numpy array
-    TrainLabels = df.iloc[:, 2:].values
+    TrainLabels = df.iloc[:, 2: 10].values
     
     return TrainLabels
 
@@ -35,29 +35,29 @@ print(labels[:3])
 
 
 
-def ReadDirNames(ReadPath):
-    """
-    Inputs:
-    ReadPath is the path of the CSV file you want to read
-    Outputs:
-    DirNames is a list of all patch_id values from the CSV file
-    """
-    # Check if the file exists
-    if not os.path.isfile(ReadPath):
-        print(f"ERROR: File does not exist at {ReadPath}")
-        return None
+# def ReadDirNames(ReadPath):
+#     """
+#     Inputs:
+#     ReadPath is the path of the CSV file you want to read
+#     Outputs:
+#     DirNames is a list of all patch_id values from the CSV file
+#     """
+#     # Check if the file exists
+#     if not os.path.isfile(ReadPath):
+#         print(f"ERROR: File does not exist at {ReadPath}")
+#         return None
     
-    # Read the CSV file into a DataFrame
-    df = pd.read_csv(ReadPath)
+#     # Read the CSV file into a DataFrame
+#     df = pd.read_csv(ReadPath)
     
-    # Extract the 'patch_id' column as a list
-    DirNames = df['patch_id'].tolist()
+#     # Extract the 'patch_id' column as a list
+#     DirNames = df['patch_id'].tolist()
     
-    return DirNames
+#     return DirNames
 
-patch_ids = ReadDirNames(LabelsPathTrain)
+# patch_ids = ReadDirNames(LabelsPathTrain)
     
-    # Print the first few patch IDs for verification
-if patch_ids:
-    print("Number of patch IDs:", len(patch_ids))
-    print("First few patch IDs:", patch_ids[:5])
+#     # Print the first few patch IDs for verification
+# if patch_ids:
+#     print("Number of patch IDs:", len(patch_ids))
+#     print("First few patch IDs:", patch_ids[:5])

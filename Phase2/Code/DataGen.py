@@ -35,7 +35,7 @@ def generate_patches(image, num_patches=10, patch_size=(128, 128), rho=32, edge_
 
             # Perturb corners randomly within [-rho, rho]
             perturb = np.random.randint(-rho, rho, size=(4, 2)).astype(np.float32)
-            perturb += np.random.randint(0,8)
+            perturb += np.random.randint(0,8, size=(1, 2))
             corners_B = corners_A + perturb
 
             # Verify corners are within image bounds

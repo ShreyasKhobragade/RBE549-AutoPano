@@ -103,7 +103,7 @@ def ReadLabels(LabelsPathTrain):
     df = pd.read_csv(LabelsPathTrain)
     
     # Extract the last 8 columns (h1 to h8) as a numpy array
-    TrainLabels = df.iloc[:, 2:].values
+    TrainLabels = df.iloc[:, 2: 10].values
     
     return TrainLabels
 

@@ -177,11 +177,10 @@ def TrainOperation(
         print("New model initialized....")
 
 
-        #initialize wandb
-
-
     for Epochs in tqdm(range(StartEpoch, NumEpochs)):
         model.train()
+        test_loss = 0
+        val_loss = 0
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
         for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
             I1Batch, CoordinatesBatch = GenerateBatch(
@@ -226,8 +225,8 @@ def TrainOperation(
                 print("\n" + SaveName + " Model Saved...")
 
             result = model.validation_step(I1Batch, CoordinatesBatch)
-            print("Loss: ", result["val_loss"].item())
-            wandb.log({"loss": result["val_loss"].item()})  
+            # print("Loss: ", result["val_loss"].item())
+            test_loss += result["val_loss"].item()
             # Tensorboard
             Writer.add_scalar(
                 "LossEveryIter",
@@ -249,8 +248,11 @@ def TrainOperation(
             SaveName,
         )
 
+        wandb.log({"loss": test_loss / NumIterationsPerEpoch})  
+        print("Epoch: ", Epochs, "Loss: ", test_loss / NumIterationsPerEpoch)
+
         model.eval()
-        # code for validation
+
         NumIterationsPerEpoch = int(NumValSamples / MiniBatchSize / DivTrain)
         with torch.no_grad():
             for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
@@ -265,9 +267,13 @@ def TrainOperation(
                 PredicatedCoordinatesBatch = model(I1Batch)
                 LossThisBatch = LossFn(PredicatedCoordinatesBatch, CoordinatesBatch)
                 result = model.validation_step(I1Batch, CoordinatesBatch)
-                print("Validation Loss: ", result["val_loss"].item())
-                wandb.log({"Validation loss": result["val_loss"].item()})
+                # print("Validation Loss: ", result["val_loss"].item())
+                val_loss += result["val_loss"].item()
         print("\n" + SaveName + " Model Saved...")
+
+        wandb.log({"Validation loss": result["val_loss"].item()})
+        print("Epoch: ", Epochs, "Validation Loss: ", val_loss / NumIterationsPerEpoch)
+
     wandb.finish()  
 
 
