@@ -35,18 +35,30 @@ sys.dont_write_bytecode = True
 #     loss = ...
 #     return loss
 
-def LossFn(PredicatedCoordinatesBatch, CoordinatesBatch):
-    # Reshape delta from (batch_size, 168) → (batch_size, 8, 21)
-    loss_fn=torch.nn.MSELoss()
-    loss=loss_fn(PredicatedCoordinatesBatch, CoordinatesBatch)
+# def LossFn(PredicatedCoordinatesBatch, CoordinatesBatch):
+#     # Reshape delta from (batch_size, 168) → (batch_size, 8, 21)
+#     loss_fn=torch.nn.MSELoss()
+#     loss=loss_fn(PredicatedCoordinatesBatch, CoordinatesBatch)
 
-    return loss
+#     return loss
+
+def LossFn(PredicatedCoordinatesBatch, CoordinatesBatch):
+    # Ensure both inputs are float32
+    PredicatedCoordinatesBatch = PredicatedCoordinatesBatch.float()
+    CoordinatesBatch = CoordinatesBatch.float()
+
+    # Compute loss using MSELoss
+    loss_fn = torch.nn.MSELoss()
+    loss = loss_fn(PredicatedCoordinatesBatch, CoordinatesBatch)
+
+    return torch.sqrt(loss)
+
 
 
 class HomographyModel(pl.LightningModule):
-    def __init__(self, hparams):
+    def __init__(self):
         super(HomographyModel, self).__init__()
-        self.hparams = hparams
+        # self.hparams = hparams
         self.model = SupNet()
 
     def forward(self, a):

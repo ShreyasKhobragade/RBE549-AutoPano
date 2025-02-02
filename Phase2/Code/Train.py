@@ -47,24 +47,26 @@ import string
 from termcolor import colored, cprint
 import math as m
 from tqdm import tqdm
+import wandb
+
+
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="AutoPano"
+
+    # # track hyperparameters and run metadata
+    # config={
+    # "learning_rate": 0.02,
+    # "architecture": "CNN",
+    # "dataset": "CIFAR-100",
+    # "epochs": 10,
+    # }
+)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# torch.cuda.empty_cache()
 
-def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize,T):
-    """
-    Inputs:
-    BasePath - Path to COCO folder without "/" at the end
-    DirNamesTrain - Variable with Subfolder paths to train files
-    NOTE that Train can be replaced by Val/Test for generating batch corresponding to validation (held-out testing in this case)/testing
-    TrainCoordinates - Coordinatess corresponding to Train
-    NOTE that TrainCoordinates can be replaced by Val/TestCoordinatess for generating batch corresponding to validation (held-out testing in this case)/testing
-    ImageSize - Size of the Image
-    MiniBatchSize is the size of the MiniBatch
-    Outputs:
-    I1Batch - Batch of images
-    CoordinatesBatch - Batch of coordinates
-    """
-
+def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, T):
     I1Batch = []
     CoordinatesBatch = []
     if T == 0:
@@ -76,30 +78,31 @@ def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatc
     while ImageNum < MiniBatchSize:
         # Generate random image
         RandIdx = random.randint(0, len(DirNamesTrain) - 1)
-
-
-
         RandImageName_o = BasePath + os.sep + name + "/original_patches/" + DirNamesTrain[RandIdx] + "_original.jpg"
         RandImageName_w = BasePath + os.sep + name + "/warped_patches/" + DirNamesTrain[RandIdx] + "_warped.jpg"
         ImageNum += 1
+        # DirNamesVal
+        # Read images
+        I1 = np.float32(cv2.imread(RandImageName_o, cv2.IMREAD_GRAYSCALE)) / 255.0
+        I2 = np.float32(cv2.imread(RandImageName_w, cv2.IMREAD_GRAYSCALE)) / 255.0
 
-        ##########################################################
-        # Add any standardization or data augmentation here!
-        ##########################################################
-        I1 = np.float32(cv2.imread(RandImageName_o))
-        I2 = np.float32(cv2.imread(RandImageName_w))
+        # Add new axis and concatenate
+        I1 = I1[..., np.newaxis]
+        I2 = I2[..., np.newaxis]
         IS = np.concatenate((I1, I2), axis=2)
-        Coordinates = TrainCoordinates[RandIdx]
 
-        # Append All Images and Mask
-        I1Batch.append(torch.from_numpy(IS))
-        CoordinatesBatch.append(torch.tensor(Coordinates))
+        # Convert NumPy arrays to PyTorch tensors (cast to float32)
+        IS = torch.from_numpy(IS).permute(2, 0, 1).float()  # Shape: (C x H x W)
+        Coordinates = torch.tensor(TrainCoordinates[RandIdx], dtype=torch.float32)  # Ensure float32
 
+        # Append tensors to batch
+        I1Batch.append(IS)
+        CoordinatesBatch.append(Coordinates)
 
-
-
-
+    # Stack batches and move to device
     return torch.stack(I1Batch).to(device), torch.stack(CoordinatesBatch).to(device)
+
+
 
 
 def PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile):
@@ -116,8 +119,11 @@ def PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile)
 
 def TrainOperation(
     DirNamesTrain,
+    DirNamesVal,
     TrainCoordinates,
+    ValCoordinates,
     NumTrainSamples,
+    NumValSamples,
     ImageSize,
     NumEpochs,
     MiniBatchSize,
@@ -155,7 +161,7 @@ def TrainOperation(
     # Fill your optimizer of choice here!
     ###############################################
     Optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(Optimizer, step_size=30000, gamma=0.9)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(Optimizer, gamma=0.9)
     # Tensorboard
     # Create a summary to monitor loss tensor
     Writer = SummaryWriter(LogsPath)
@@ -171,14 +177,18 @@ def TrainOperation(
         print("New model initialized....")
 
 
-        #initialize wandb
-
     for Epochs in tqdm(range(StartEpoch, NumEpochs)):
+        model.train()
+        test_loss = 0
+        val_loss = 0
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
         for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
             I1Batch, CoordinatesBatch = GenerateBatch(
-                BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize
+                BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, 0
             )
+
+            I1Batch = I1Batch.float()
+            CoordinatesBatch = CoordinatesBatch.float()
 
             # Predict output with forward pass
             PredicatedCoordinatesBatch = model(I1Batch)
@@ -186,8 +196,12 @@ def TrainOperation(
 
             Optimizer.zero_grad()
             LossThisBatch.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             Optimizer.step()
             scheduler.step()
+
             # Save checkpoint every some SaveCheckPoint's iterations
             if PerEpochCounter % SaveCheckPoint == 0:
                 # Save the Model learnt in this epoch
@@ -211,6 +225,8 @@ def TrainOperation(
                 print("\n" + SaveName + " Model Saved...")
 
             result = model.validation_step(I1Batch, CoordinatesBatch)
+            # print("Loss: ", result["val_loss"].item())
+            test_loss += result["val_loss"].item()
             # Tensorboard
             Writer.add_scalar(
                 "LossEveryIter",
@@ -231,7 +247,34 @@ def TrainOperation(
             },
             SaveName,
         )
+
+        wandb.log({"loss": test_loss / NumIterationsPerEpoch})  
+        print("Epoch: ", Epochs, "Loss: ", test_loss / NumIterationsPerEpoch)
+
+        model.eval()
+
+        NumIterationsPerEpoch = int(NumValSamples / MiniBatchSize / DivTrain)
+        with torch.no_grad():
+            for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
+                I1Batch, CoordinatesBatch = GenerateBatch(
+                    BasePath, DirNamesVal, ValCoordinates, ImageSize, MiniBatchSize, 1
+                )
+
+                I1Batch = I1Batch.float()
+                CoordinatesBatch = CoordinatesBatch.float()
+
+                # Predict output with forward pass
+                PredicatedCoordinatesBatch = model(I1Batch)
+                LossThisBatch = LossFn(PredicatedCoordinatesBatch, CoordinatesBatch)
+                result = model.validation_step(I1Batch, CoordinatesBatch)
+                # print("Validation Loss: ", result["val_loss"].item())
+                val_loss += result["val_loss"].item()
         print("\n" + SaveName + " Model Saved...")
+
+        wandb.log({"Validation loss": result["val_loss"].item()})
+        print("Epoch: ", Epochs, "Validation Loss: ", val_loss / NumIterationsPerEpoch)
+
+    wandb.finish()  
 
 
 def main():
@@ -274,7 +317,7 @@ def main():
     Parser.add_argument(
         "--MiniBatchSize",
         type=int,
-        default=1,
+        default=32,
         help="Size of the MiniBatch to use, Default:1",
     )
     Parser.add_argument(
@@ -302,11 +345,14 @@ def main():
     # Setup all needed parameters including file reading
     (
         DirNamesTrain,
+        DirNamesVal,
         SaveCheckPoint,
         ImageSize,
         NumTrainSamples,
+        NumValSamples,
         TrainCoordinates,
-        NumClasses,
+        ValCoordinates,
+        NumClasses
     ) = SetupAll(BasePath, CheckPointPath)
 
     # Find Latest Checkpoint File
@@ -320,8 +366,11 @@ def main():
 
     TrainOperation(
         DirNamesTrain,
+        DirNamesVal,
         TrainCoordinates,
+        ValCoordinates,
         NumTrainSamples,
+        NumValSamples,
         ImageSize,
         NumEpochs,
         MiniBatchSize,
@@ -333,6 +382,8 @@ def main():
         LogsPath,
         ModelType,
     )
+
+    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
