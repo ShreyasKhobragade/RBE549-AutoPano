@@ -1,0 +1,7 @@
+Phase2/Checkpoints/
+Phase2/Data/
+Phase2/Code/Logs/
+Phase2/Code/wandb/
+Phase2/Code/Misc/__pycache__/
+Phase2/Code/Network/__pycache__/
+.vscode/

@@ -69,10 +69,13 @@ def SetupAll(BasePath, CheckPointPath):
 
     return (
         DirNamesTrain,
+        DirNamesVal,
         SaveCheckPoint,
         ImageSize,
         NumTrainSamples,
+        NumValSamples,
         TrainLabels,
+        ValLabels,
         NumClasses,
     )
 # I have made the changes in these file but nothing is getting returned from here to Train.py
