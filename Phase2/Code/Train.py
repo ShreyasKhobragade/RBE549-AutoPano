@@ -160,8 +160,9 @@ def TrainOperation(
     ###############################################
     # Fill your optimizer of choice here!
     ###############################################
-    Optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(Optimizer, gamma=0.9)
+    # Optimizer = torch.optim.SGD(model.parameters(), lr=0.0005, momentum=0.9)
+    Optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
+    scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=1000, gamma=0.99)
     # Tensorboard
     # Create a summary to monitor loss tensor
     Writer = SummaryWriter(LogsPath)
@@ -179,7 +180,7 @@ def TrainOperation(
 
     for Epochs in tqdm(range(StartEpoch, NumEpochs)):
         model.train()
-        test_loss = 0
+        train_loss = 0
         val_loss = 0
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
         for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
@@ -226,7 +227,7 @@ def TrainOperation(
 
             result = model.validation_step(I1Batch, CoordinatesBatch)
             # print("Loss: ", result["val_loss"].item())
-            test_loss += result["val_loss"].item()
+            train_loss += result["val_loss"].item()
             # Tensorboard
             Writer.add_scalar(
                 "LossEveryIter",
@@ -235,7 +236,7 @@ def TrainOperation(
             )
             # If you don't flush the tensorboard doesn't update until a lot of iterations!
             Writer.flush()
-
+        train_loss = train_loss / NumIterationsPerEpoch
         # Save model every epoch
         SaveName = CheckPointPath + str(Epochs) + "model.ckpt"
         torch.save(
@@ -248,8 +249,8 @@ def TrainOperation(
             SaveName,
         )
 
-        wandb.log({"loss": test_loss / NumIterationsPerEpoch})  
-        print("Epoch: ", Epochs, "Loss: ", test_loss / NumIterationsPerEpoch)
+        # wandb.log({"loss": train_loss / NumIterationsPerEpoch})  
+        print("Epoch: ", Epochs, "Loss: ", train_loss / NumIterationsPerEpoch)
 
         model.eval()
 
@@ -270,8 +271,9 @@ def TrainOperation(
                 # print("Validation Loss: ", result["val_loss"].item())
                 val_loss += result["val_loss"].item()
         print("\n" + SaveName + " Model Saved...")
+        val_loss = val_loss / NumIterationsPerEpoch
 
-        wandb.log({"Validation loss": result["val_loss"].item()})
+        wandb.log({"loss": train_loss, "Validation loss": val_loss, "Epoch": Epochs})
         print("Epoch: ", Epochs, "Validation Loss: ", val_loss / NumIterationsPerEpoch)
 
     wandb.finish()  
