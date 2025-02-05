@@ -5,3 +5,7 @@ Phase2/Code/wandb/
 Phase2/Code/Misc/__pycache__/
 Phase2/Code/Network/__pycache__/
 .vscode/
+Phase2/Code/Train2.py
+Phase2/Code/Train3.py
+Phase2/Code/verify_data.py
+Phase2/Code/try.py
