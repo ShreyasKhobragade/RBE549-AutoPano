@@ -22,7 +22,7 @@ import torch
 import torchvision
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
-from torch.optim import AdamW
+from torch.optim import AdamW   
 from Network.Network import HomographyModel, LossFn
 import cv2
 import sys
@@ -48,6 +48,8 @@ from termcolor import colored, cprint
 import math as m
 from tqdm import tqdm
 import wandb
+import kornia
+import pandas as pd
 
 
 wandb.init(
@@ -65,6 +67,98 @@ wandb.init(
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # torch.cuda.empty_cache()
+
+def TensorDLT(H4pt_batch, CA_batch):
+    batch_size = H4pt_batch.shape[0]
+    H4pt = H4pt_batch.reshape(batch_size, 4, 2)
+    CA = CA_batch.reshape(batch_size, 4, 2)
+    A = torch.zeros(batch_size, 8, 9, device=H4pt_batch.device)
+    for b in range(batch_size):
+        for i in range(4):
+            x, y = CA[b, i]  # Source points
+            u, v = H4pt[b, i] - CA[b, i]  # Offset from source
+            A[b, 2*i] = torch.tensor([-x, -y, -1, 0, 0, 0, u*x, u*y, u])
+            A[b, 2*i + 1] = torch.tensor([0, 0, 0, -x, -y, -1, v*x, v*y, v])
+    _, _, Vt = torch.linalg.svd(A)
+    H = Vt[..., -1].reshape(batch_size, 3, 3)
+    H = H / H[:, 2:3, 2:3]
+    return H
+ 
+
+def ReadCorners(LabelsPathTrain):
+    if not os.path.isfile(LabelsPathTrain):
+        print(f"ERROR: Train Labels do not exist in {LabelsPathTrain}")
+        sys.exit()
+    df = pd.read_csv(LabelsPathTrain)
+    TrainCorners = df.iloc[:, 10:].values
+    return TrainCorners
+
+def ReadImageNames(ReadPath):
+    if not os.path.isfile(ReadPath):
+        print(f"ERROR: File does not exist at {ReadPath}")
+        return None
+    df = pd.read_csv(ReadPath)
+    ImageNames = df['image_id'].tolist()
+    return ImageNames
+
+def GenerateBatchUnSup(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, T):
+    I1Batch = []
+    # CoordinatesBatch = []
+    CornerBatch = []
+    PABatch = []
+    PBBatch = []
+    IA = []
+    if T == 0:
+        name = "TrainSet"
+        name1 = 'Train'
+    else:
+        name = "ValSet"
+        name1 = 'Val'
+    
+    # LabelsPathTrain = '../Data/TrainSet/labels.csv'
+    Corners = ReadCorners(BasePath + os.sep + name + "/labels.csv")
+    ImageName = ReadImageNames(BasePath + os.sep + name + "/labels.csv")
+
+    ImageNum = 0
+    while ImageNum < MiniBatchSize:
+        # Generate random image
+        RandIdx = random.randint(0, len(DirNamesTrain) - 1)
+        RandImageName_o = BasePath + os.sep + name + "/original_patches/" + DirNamesTrain[RandIdx] + "_original.jpg"
+        RandImageName_w = BasePath + os.sep + name + "/warped_patches/" + DirNamesTrain[RandIdx] + "_warped.jpg"
+        imgname = BasePath + os.sep + name1 + os.sep + ImageName[RandIdx]
+        
+        ImageNum += 1
+        # DirNamesVal
+        # Read images
+        I1 = np.float32(cv2.imread(RandImageName_o, cv2.IMREAD_GRAYSCALE)) / 255.0
+        I2 = np.float32(cv2.imread(RandImageName_w, cv2.IMREAD_GRAYSCALE)) / 255.0
+        Image = cv2.imread(imgname, cv2.IMREAD_GRAYSCALE) / 255.0
+        Image = cv2.resize(Image, (320, 240))
+        # Add new axis and concatenate
+        I1 = I1[..., np.newaxis]
+        I2 = I2[..., np.newaxis]
+        IS = np.concatenate((I1, I2), axis=2)
+        Image = Image[..., np.newaxis]
+
+        # Convert NumPy arrays to PyTorch tensors (cast to float32)
+        IS = torch.from_numpy(IS).permute(2, 0, 1).float()  # Shape: (C x H x W)
+        I1 = torch.from_numpy(I1)
+        # .permute(1, 0, 1).float()  # Shape: (C x H x W)
+        I2 = torch.from_numpy(I2)
+        # .permute(1, 0, 1).float()  # Shape: (C x H x W)
+        Image = torch.from_numpy(Image).permute(2, 0, 1).float().to(device)
+        Corner_A = torch.tensor(Corners[RandIdx], dtype=torch.float32)
+        # Append tensors to batch
+        I1Batch.append(IS)
+        CornerBatch.append(Corner_A)
+        PABatch.append(I1)
+        PBBatch.append(I2)
+        IA.append(Image)
+
+
+    # Stack batches and move to device
+    # return torch.stack(I1Batch).to(device), torch.stack(CornerBatch).to(device), torch.stack(PABatch).to(device), torch.stack(PBBatch).to(device)
+    return torch.stack(I1Batch).to(device), torch.stack(CornerBatch).to(device), torch.stack(PABatch).to(device), torch.stack(PBBatch).to(device), IA
 
 def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, T):
     I1Batch = []
@@ -184,21 +278,55 @@ def TrainOperation(
         val_loss = 0
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
         for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
-            I1Batch, CoordinatesBatch = GenerateBatch(
+            
+            if ModelType == "UnSup":
+                I1Batch, CornerBatch, PABatch, PBBatch, IA = GenerateBatchUnSup(
                 BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, 0
-            )
+                )
+                I1Batch = I1Batch.float()
+                CornerBatch = CornerBatch.float()
+                PABatch = PABatch.float()
+                PBBatch = PBBatch.float()
+                # Predict output with forward pass
+                PredicatedH4pt = model(I1Batch)
+                H = TensorDLT(PredicatedH4pt, CornerBatch)
+                PABatch_input = PABatch.permute(0, 3, 1, 2)
+                LossThisBatch = 0
+                warped_PA = torch.zeros_like(PBBatch)
+                corners = CornerBatch.reshape(-1, 4, 2)
+                for i in range(MiniBatchSize):
+                    warped_IA = kornia.geometry.transform.warp_perspective(IA[i].unsqueeze(0), H[i].unsqueeze(0), IA[i].shape[-2:])
+                    warped_IA = warped_IA.permute(0, 2, 3, 1)
+                    x_min = int(torch.min(corners[i, :, 0]).item())
+                    x_max = int(torch.max(corners[i, :, 0]).item())
+                    y_min = int(torch.min(corners[i, :, 1]).item())
+                    y_max = int(torch.max(corners[i, :, 1]).item())
+                    cropped_region = warped_IA[0, y_min:y_max, x_min:x_max, :]
+                    warped_PA[i] = cropped_region
+                LossThisBatch += torch.nn.L1Loss()(warped_PA, PBBatch)
+                print("Loss: ", LossThisBatch.item())
+                Optimizer.zero_grad()
+                H.requires_grad = True
+                warped_PA.requires_grad = True
+                LossThisBatch.requires_grad = True
+                LossThisBatch.backward()
 
-            I1Batch = I1Batch.float()
-            CoordinatesBatch = CoordinatesBatch.float()
+            if ModelType == "Sup":
+                I1Batch, CoordinatesBatch = GenerateBatch(
+                    BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, 0
+                )
 
-            # Predict output with forward pass
-            PredicatedCoordinatesBatch = model(I1Batch)
-            LossThisBatch = LossFn(PredicatedCoordinatesBatch, CoordinatesBatch)
+                I1Batch = I1Batch.float()
+                CoordinatesBatch = CoordinatesBatch.float()
 
-            Optimizer.zero_grad()
-            LossThisBatch.backward()
+                # Predict output with forward pass
+                PredicatedCoordinatesBatch = model(I1Batch)
+                LossThisBatch = LossFn(PredicatedCoordinatesBatch, CoordinatesBatch)
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                Optimizer.zero_grad()
+                LossThisBatch.backward()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             Optimizer.step()
             scheduler.step()
@@ -219,23 +347,29 @@ def TrainOperation(
                         "epoch": Epochs,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": Optimizer.state_dict(),
-                        "loss": LossThisBatch,
+                        # "loss": LossThisBatch,
                     },
                     SaveName,
                 )
                 print("\n" + SaveName + " Model Saved...")
 
-            result = model.validation_step(I1Batch, CoordinatesBatch)
-            # print("Loss: ", result["val_loss"].item())
-            train_loss += result["val_loss"].item()
+            if ModelType == "Sup":
+                result = model.validation_step(I1Batch, CoordinatesBatch)
+                train_loss += result["val_loss"].item()
+
+            if ModelType == "Unsup":
+                result = LossThisBatch
+                train_loss += result.item()
+
             # Tensorboard
-            Writer.add_scalar(
-                "LossEveryIter",
-                result["val_loss"],
-                Epochs * NumIterationsPerEpoch + PerEpochCounter,
-            )
+            # Writer.add_scalar(
+            #     "LossEveryIter",
+            #     result["val_loss"],
+            #     Epochs * NumIterationsPerEpoch + PerEpochCounter,
+            # )
             # If you don't flush the tensorboard doesn't update until a lot of iterations!
             Writer.flush()
+
         train_loss = train_loss / NumIterationsPerEpoch
         # Save model every epoch
         SaveName = CheckPointPath + str(Epochs) + "model.ckpt"
@@ -244,36 +378,67 @@ def TrainOperation(
                 "epoch": Epochs,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": Optimizer.state_dict(),
-                "loss": LossThisBatch,
+                # "loss": LossThisBatch,
             },
             SaveName,
         )
 
         # wandb.log({"loss": train_loss / NumIterationsPerEpoch})  
-        print("Epoch: ", Epochs, "Loss: ", train_loss / NumIterationsPerEpoch)
+        print("Epoch: ", Epochs, "Training Loss: ", train_loss / NumIterationsPerEpoch)
 
         model.eval()
 
         NumIterationsPerEpoch = int(NumValSamples / MiniBatchSize / DivTrain)
         with torch.no_grad():
             for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
-                I1Batch, CoordinatesBatch = GenerateBatch(
-                    BasePath, DirNamesVal, ValCoordinates, ImageSize, MiniBatchSize, 1
-                )
+                if ModelType == "Sup":
+                    I1Batch, CoordinatesBatch = GenerateBatch(
+                        BasePath, DirNamesVal, ValCoordinates, ImageSize, MiniBatchSize, 1
+                    )
 
-                I1Batch = I1Batch.float()
-                CoordinatesBatch = CoordinatesBatch.float()
+                    I1Batch = I1Batch.float()
+                    CoordinatesBatch = CoordinatesBatch.float()
 
-                # Predict output with forward pass
-                PredicatedCoordinatesBatch = model(I1Batch)
-                LossThisBatch = LossFn(PredicatedCoordinatesBatch, CoordinatesBatch)
-                result = model.validation_step(I1Batch, CoordinatesBatch)
-                # print("Validation Loss: ", result["val_loss"].item())
-                val_loss += result["val_loss"].item()
+                    # Predict output with forward pass
+                    PredicatedCoordinatesBatch = model(I1Batch)
+                    LossThisBatch = LossFn(PredicatedCoordinatesBatch, CoordinatesBatch)
+                    result = model.validation_step(I1Batch, CoordinatesBatch)
+                    # print("Validation Loss: ", result["val_loss"].item())
+                    val_loss += result["val_loss"].item()
+
+                if ModelType == "Unsup":
+                    I1Batch, CornerBatch, PABatch, PBBatch, IA = GenerateBatchUnSup(
+                        BasePath, DirNamesVal, ValCoordinates, ImageSize, MiniBatchSize, 1
+                    )
+                    I1Batch = I1Batch.float()
+                    CornerBatch = CornerBatch.float()
+                    PABatch = PABatch.float()
+                    PBBatch = PBBatch.float()
+
+                    # Predict output with forward pass
+                    PredicatedH4pt = model(I1Batch)
+                    H = TensorDLT(PredicatedH4pt, CornerBatch)
+                    PABatch_input = PABatch.permute(0, 3, 1, 2)
+                    LossThisBatch = 0
+                    warped_PA = torch.zeros_like(PBBatch)
+                    corners = CornerBatch.reshape(-1, 4, 2)
+                    for i in range(MiniBatchSize):
+                        warped_IA = kornia.geometry.transform.warp_perspective(IA[i].unsqueeze(0), H[i].unsqueeze(0), IA[i].shape[-2:])
+                        warped_IA = warped_IA.permute(0, 2, 3, 1)
+                        x_min = int(torch.min(corners[i, :, 0]).item())
+                        x_max = int(torch.max(corners[i, :, 0]).item())
+                        y_min = int(torch.min(corners[i, :, 1]).item())
+                        y_max = int(torch.max(corners[i, :, 1]).item())
+                        cropped_region = warped_IA[0, y_min:y_max, x_min:x_max, :]
+                        warped_PA[i] = cropped_region
+                    LossThisBatch += torch.nn.L1Loss()(warped_PA, PBBatch)
+                    # print("Validation Loss: ", LossThisBatch.item())
+                    val_loss += LossThisBatch.item()
+
         print("\n" + SaveName + " Model Saved...")
         val_loss = val_loss / NumIterationsPerEpoch
 
-        wandb.log({"loss": train_loss, "Validation loss": val_loss, "Epoch": Epochs})
+        wandb.log({"Training loss": train_loss, "Validation loss": val_loss, "Epoch": Epochs})
         print("Epoch: ", Epochs, "Validation Loss: ", val_loss / NumIterationsPerEpoch)
 
     wandb.finish()  
