@@ -291,7 +291,7 @@ def TrainOperation(
                 PredicatedH4pt = model(I1Batch)
                 H = TensorDLT(PredicatedH4pt, CornerBatch)
                 PABatch_input = PABatch.permute(0, 3, 1, 2)
-                LossThisBatch = 0
+                # LossThisBatch = 0
                 warped_PA = torch.zeros_like(PBBatch)
                 corners = CornerBatch.reshape(-1, 4, 2)
                 for i in range(MiniBatchSize):
@@ -303,8 +303,8 @@ def TrainOperation(
                     y_max = int(torch.max(corners[i, :, 1]).item())
                     cropped_region = warped_IA[0, y_min:y_max, x_min:x_max, :]
                     warped_PA[i] = cropped_region
-                LossThisBatch += torch.nn.L1Loss()(warped_PA, PBBatch)
-                print("Loss: ", LossThisBatch.item())
+                LossThisBatch = torch.nn.L1Loss()(warped_PA, PBBatch)
+                # print("Loss: ", LossThisBatch.item())
                 Optimizer.zero_grad()
                 H.requires_grad = True
                 warped_PA.requires_grad = True
@@ -357,7 +357,7 @@ def TrainOperation(
                 result = model.validation_step(I1Batch, CoordinatesBatch)
                 train_loss += result["val_loss"].item()
 
-            if ModelType == "Unsup":
+            if ModelType == "UnSup":
                 result = LossThisBatch
                 train_loss += result.item()
 
@@ -384,7 +384,7 @@ def TrainOperation(
         )
 
         # wandb.log({"loss": train_loss / NumIterationsPerEpoch})  
-        print("Epoch: ", Epochs, "Training Loss: ", train_loss / NumIterationsPerEpoch)
+        print("Epoch: ", Epochs, "Training Loss: ", train_loss)
 
         model.eval()
 
@@ -406,7 +406,7 @@ def TrainOperation(
                     # print("Validation Loss: ", result["val_loss"].item())
                     val_loss += result["val_loss"].item()
 
-                if ModelType == "Unsup":
+                if ModelType == "UnSup":
                     I1Batch, CornerBatch, PABatch, PBBatch, IA = GenerateBatchUnSup(
                         BasePath, DirNamesVal, ValCoordinates, ImageSize, MiniBatchSize, 1
                     )
@@ -431,7 +431,7 @@ def TrainOperation(
                         y_max = int(torch.max(corners[i, :, 1]).item())
                         cropped_region = warped_IA[0, y_min:y_max, x_min:x_max, :]
                         warped_PA[i] = cropped_region
-                    LossThisBatch += torch.nn.L1Loss()(warped_PA, PBBatch)
+                    LossThisBatch = torch.nn.L1Loss()(warped_PA, PBBatch)
                     # print("Validation Loss: ", LossThisBatch.item())
                     val_loss += LossThisBatch.item()
 
@@ -439,7 +439,7 @@ def TrainOperation(
         val_loss = val_loss / NumIterationsPerEpoch
 
         wandb.log({"Training loss": train_loss, "Validation loss": val_loss, "Epoch": Epochs})
-        print("Epoch: ", Epochs, "Validation Loss: ", val_loss / NumIterationsPerEpoch)
+        print("Epoch: ", Epochs, "Validation Loss: ", val_loss)
 
     wandb.finish()  
 
