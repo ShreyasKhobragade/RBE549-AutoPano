@@ -82,7 +82,6 @@ def generate_patches(image, num_patches=10, patch_size=(128, 128), rho=32, edge_
     
     return all_patches, all_labels, all_corners
 
-
 def process_dataset(input_folder, output_folder, num_patches=10, patch_size=(128, 128), 
                    rho=32, edge_margin=40, resize=(320, 240)):
     # Create output directories

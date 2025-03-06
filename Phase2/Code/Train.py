@@ -50,11 +50,11 @@ from tqdm import tqdm
 import wandb
 import kornia
 import pandas as pd
-
+import torch.nn.functional as F
 
 wandb.init(
     # set the wandb project where this run will be logged
-    project="AutoPano"
+    project="Check"
 
     # # track hyperparameters and run metadata
     # config={
@@ -66,7 +66,21 @@ wandb.init(
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# torch.cuda.empty_cache()
+torch.cuda.empty_cache()
+
+def stn(image, H):
+    batch = len(image)
+    H_inv = torch.linalg.inv(H)
+    y, x = torch.meshgrid(torch.linspace(-1, 1, 128),
+                          torch.linspace(-1, 1, 128), indexing="ij")
+    grid = torch.stack((x, y, torch.ones_like(x)), dim=-1).view(-1, 3).T
+    grid = grid.repeat(batch, 1, 1).to(device)
+    new_pts = torch.bmm(H_inv, grid).permute(0, 2, 1).to(device)
+    new_pts = new_pts[:, :, :2] / new_pts[:, :, 2:].clamp(min=1e-8)
+    new_grid = new_pts.view(batch, 128, 128, 2)
+    warped_IA = F.grid_sample(image, new_grid, align_corners=True)
+
+    return warped_IA
 
 def TensorDLT(H4pt_batch, CA_batch):
     batch_size = H4pt_batch.shape[0]
@@ -158,7 +172,7 @@ def GenerateBatchUnSup(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, Min
 
     # Stack batches and move to device
     # return torch.stack(I1Batch).to(device), torch.stack(CornerBatch).to(device), torch.stack(PABatch).to(device), torch.stack(PBBatch).to(device)
-    return torch.stack(I1Batch).to(device), torch.stack(CornerBatch).to(device), torch.stack(PABatch).to(device), torch.stack(PBBatch).to(device), IA
+    return torch.stack(I1Batch).to(device), torch.stack(CornerBatch).to(device), torch.stack(PABatch).to(device), torch.stack(PBBatch).to(device), torch.stack(IA).to(device)
 
 def GenerateBatch(BasePath, DirNamesTrain, TrainCoordinates, ImageSize, MiniBatchSize, T):
     I1Batch = []
@@ -290,21 +304,37 @@ def TrainOperation(
                 # Predict output with forward pass
                 PredicatedH4pt = model(I1Batch)
                 H = TensorDLT(PredicatedH4pt, CornerBatch)
-                PABatch_input = PABatch.permute(0, 3, 1, 2)
-                # LossThisBatch = 0
+                # PABatch_input = PABatch.permute(0, 3, 1, 2)
+                PBBatch = PBBatch.permute(0, 3, 1, 2)
+                #LossThisBatch = 0
                 warped_PA = torch.zeros_like(PBBatch)
                 corners = CornerBatch.reshape(-1, 4, 2)
-                for i in range(MiniBatchSize):
-                    warped_IA = kornia.geometry.transform.warp_perspective(IA[i].unsqueeze(0), H[i].unsqueeze(0), IA[i].shape[-2:])
-                    warped_IA = warped_IA.permute(0, 2, 3, 1)
-                    x_min = int(torch.min(corners[i, :, 0]).item())
-                    x_max = int(torch.max(corners[i, :, 0]).item())
-                    y_min = int(torch.min(corners[i, :, 1]).item())
-                    y_max = int(torch.max(corners[i, :, 1]).item())
-                    cropped_region = warped_IA[0, y_min:y_max, x_min:x_max, :]
-                    warped_PA[i] = cropped_region
+                # print('before stn')
+                warped_IA = stn(IA,H.to(device))
+
+
+                x_min = torch.min(corners[..., 0], dim=1)[0]  # Shape: [32]
+                x_max = torch.max(corners[..., 0], dim=1)[0]  # Shape: [32]
+                y_min = torch.min(corners[..., 1], dim=1)[0]  # Shape: [32]
+                y_max = torch.max(corners[..., 1], dim=1)[0]  # Shape: [32]
+
+                # Ensure coordinates are within bounds
+                x_min = torch.clamp(x_min, min=0, max=128)
+                x_max = torch.clamp(x_max, min=0, max=128)
+                y_min = torch.clamp(y_min, min=0, max=128)
+                y_max = torch.clamp(y_max, min=0, max=128)
+
+                # Create normalized coordinates for grid_sample
+                y_coords = torch.linspace(-1, 1, 128, device=device)
+                x_coords = torch.linspace(-1, 1, 128, device=device)
+                grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing='ij')
+                grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
+                grid = grid.repeat(MiniBatchSize, 1, 1, 1)  # Shape: [32, 128, 128, 2]
+
+                # Use grid_sample to extract all patches at once
+                warped_PA = F.grid_sample(warped_IA, grid, align_corners=True)
                 LossThisBatch = torch.nn.L1Loss()(warped_PA, PBBatch)
-                # print("Loss: ", LossThisBatch.item())
+                print("Loss: ", LossThisBatch.item())
                 Optimizer.zero_grad()
                 H.requires_grad = True
                 warped_PA.requires_grad = True
@@ -354,11 +384,13 @@ def TrainOperation(
                 print("\n" + SaveName + " Model Saved...")
 
             if ModelType == "Sup":
+                #esult = LossThisBatch
                 result = model.validation_step(I1Batch, CoordinatesBatch)
                 train_loss += result["val_loss"].item()
 
             if ModelType == "UnSup":
                 result = LossThisBatch
+                print('result:', result)
                 train_loss += result.item()
 
             # Tensorboard
@@ -383,7 +415,7 @@ def TrainOperation(
             SaveName,
         )
 
-        # wandb.log({"loss": train_loss / NumIterationsPerEpoch})  
+        #wandb.log({"loss": train_loss / NumIterationsPerEpoch})  
         print("Epoch: ", Epochs, "Training Loss: ", train_loss)
 
         model.eval()
@@ -422,15 +454,30 @@ def TrainOperation(
                     LossThisBatch = 0
                     warped_PA = torch.zeros_like(PBBatch)
                     corners = CornerBatch.reshape(-1, 4, 2)
-                    for i in range(MiniBatchSize):
-                        warped_IA = kornia.geometry.transform.warp_perspective(IA[i].unsqueeze(0), H[i].unsqueeze(0), IA[i].shape[-2:])
-                        warped_IA = warped_IA.permute(0, 2, 3, 1)
-                        x_min = int(torch.min(corners[i, :, 0]).item())
-                        x_max = int(torch.max(corners[i, :, 0]).item())
-                        y_min = int(torch.min(corners[i, :, 1]).item())
-                        y_max = int(torch.max(corners[i, :, 1]).item())
-                        cropped_region = warped_IA[0, y_min:y_max, x_min:x_max, :]
-                        warped_PA[i] = cropped_region
+                    
+                    warped_IA = stn(IA,H.to(device))
+
+
+                    x_min = torch.min(corners[..., 0], dim=1)[0]  # Shape: [32]
+                    x_max = torch.max(corners[..., 0], dim=1)[0]  # Shape: [32]
+                    y_min = torch.min(corners[..., 1], dim=1)[0]  # Shape: [32]
+                    y_max = torch.max(corners[..., 1], dim=1)[0]  # Shape: [32]
+
+                    # Ensure coordinates are within bounds
+                    x_min = torch.clamp(x_min, min=0, max=128)
+                    x_max = torch.clamp(x_max, min=0, max=128)
+                    y_min = torch.clamp(y_min, min=0, max=128)
+                    y_max = torch.clamp(y_max, min=0, max=128)
+
+                    # Create normalized coordinates for grid_sample
+                    y_coords = torch.linspace(-1, 1, 128, device=device)
+                    x_coords = torch.linspace(-1, 1, 128, device=device)
+                    grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing='ij')
+                    grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
+                    grid = grid.repeat(MiniBatchSize, 1, 1, 1)  # Shape: [32, 128, 128, 2]
+
+                    # Use grid_sample to extract all patches at once
+                    warped_PA = F.grid_sample(warped_IA, grid, align_corners=True)
                     LossThisBatch = torch.nn.L1Loss()(warped_PA, PBBatch)
                     # print("Validation Loss: ", LossThisBatch.item())
                     val_loss += LossThisBatch.item()
@@ -460,13 +507,13 @@ def main():
     )
     Parser.add_argument(
         "--CheckPointPath",
-        default="../Checkpoints/",
+        default="../Checkpoints_UnSup_0005/",
         help="Path to save Checkpoints, Default: ../Checkpoints/",
     )
 
     Parser.add_argument(
         "--ModelType",
-        default="Unsup",
+        default="UnSup",
         help="Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup",
     )
     Parser.add_argument(
